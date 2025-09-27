@@ -7,11 +7,12 @@ import { createProxyMiddleware } from "http-proxy-middleware";
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// BASIC SECURITY + LOGS
+// ---- Security & logs
 app.use(helmet());
 app.use(morgan("tiny"));
+app.set("trust proxy", true);
 
-// CORS (allow your frontend)
+// ---- CORS (depuis ton frontend)
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "*";
 app.use(
   cors({
@@ -20,15 +21,12 @@ app.use(
   })
 );
 
-// HEALTH
+// ---- Health
 app.get("/healthz", (_req, res) => res.send("ok"));
 
-// TENANT INJECTION (dev mode)
+// ---- Dev headers (multi-tenant côté dev)
 const allowDevHeaders = process.env.ALLOW_DEV_HEADERS === "true";
-
 app.use((req, _res, next) => {
-  // In production, you’d read a JWT and set orgId/userId here.
-  // For now, allow dev fallback if enabled.
   if (allowDevHeaders) {
     req.headers["x-org-id"] = process.env.DEV_ORG_ID || "demo-org";
     req.headers["x-user-id"] = process.env.DEV_USER_ID || "demo-user";
@@ -36,28 +34,40 @@ app.use((req, _res, next) => {
   next();
 });
 
-// FORWARD EVERYTHING UNDER /n8n TO YOUR N8N
-const N8N_BASE_URL = process.env.N8N_BASE_URL; // e.g., https://your-n8n-cloud
+// ---- Proxy n8n
+const N8N_BASE_URL = process.env.N8N_BASE_URL; // ex: https://upvizio.app.n8n.cloud
+
 app.use(
   "/n8n",
   createProxyMiddleware({
     target: N8N_BASE_URL,
     changeOrigin: true,
-    pathRewrite: { "^/n8n": "" }, // /n8n/* -> /* on n8n
-    headers: {
-      // pass org/user to n8n
-      "x-org-id": (req) => req.headers["x-org-id"],
-      "x-user-id": (req) => req.headers["x-user-id"],
+    xfwd: true,
+    // /n8n/... -> /... côté n8n
+    pathRewrite: { "^/n8n": "/" },
+    // si le target est en https avec un cert valide, pas besoin de secure:false
+    // secure: true (par défaut)
+    proxyTimeout: 30_000,
+    timeout: 30_000,
+    onProxyReq(proxyReq, req) {
+      // propage les headers multi-tenant si présents
+      const orgId = req.headers["x-org-id"];
+      const userId = req.headers["x-user-id"];
+      if (orgId) proxyReq.setHeader("x-org-id", orgId);
+      if (userId) proxyReq.setHeader("x-user-id", userId);
     },
   })
 );
 
-// Example API for your frontend (proxy to n8n workflows)
+// ---- (Optionnel) Proxy /api vers n8n si tu appelles ses endpoints REST
 app.use(
   "/api",
   createProxyMiddleware({
     target: N8N_BASE_URL,
-    changeOrigin: true
+    changeOrigin: true,
+    xfwd: true,
+    proxyTimeout: 30_000,
+    timeout: 30_000,
   })
 );
 
