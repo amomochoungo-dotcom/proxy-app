@@ -5,71 +5,95 @@ import morgan from "morgan";
 import { createProxyMiddleware } from "http-proxy-middleware";
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = Number(process.env.PORT || 8080);
 
 // ---- Security & logs
 app.use(helmet());
 app.use(morgan("tiny"));
 app.set("trust proxy", true);
 
-// ---- CORS (depuis ton frontend)
+// ---- CORS (frontend)
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "*";
-app.use(
-  cors({
-    origin: FRONTEND_ORIGIN,
-    credentials: true,
-  })
-);
+app.use(cors({ origin: FRONTEND_ORIGIN, credentials: true }));
 
 // ---- Health
 app.get("/healthz", (_req, res) => res.send("ok"));
 
-// ---- Dev headers (multi-tenant côté dev)
-const allowDevHeaders = process.env.ALLOW_DEV_HEADERS === "true";
+// ---- Dev multi-tenant headers
+const ALLOW_DEV_HEADERS = (process.env.ALLOW_DEV_HEADERS || "").toLowerCase() === "true";
 app.use((req, _res, next) => {
-  if (allowDevHeaders) {
-    req.headers["x-org-id"] = process.env.DEV_ORG_ID || "demo-org";
-    req.headers["x-user-id"] = process.env.DEV_USER_ID || "demo-user";
+  if (ALLOW_DEV_HEADERS) {
+    req.headers["x-org-id"] = req.headers["x-org-id"] || process.env.DEV_ORG_ID || "demo-org";
+    req.headers["x-user-id"] = req.headers["x-user-id"] || process.env.DEV_USER_ID || "demo-user";
   }
   next();
 });
 
-// ---- Proxy n8n
-const N8N_BASE_URL = process.env.N8N_BASE_URL; // ex: https://upvizio.app.n8n.cloud
+// ---- Common proxy options
+const PROXY_TIMEOUT = Number(process.env.API_TIMEOUT_MS || 30000);
+const commonProxyOpts = {
+  changeOrigin: true,
+  xfwd: true,
+  proxyTimeout: PROXY_TIMEOUT,
+  timeout: PROXY_TIMEOUT,
+  onProxyReq(proxyReq, req) {
+    // forward tenant headers if present
+    const orgId = req.headers["x-org-id"];
+    const userId = req.headers["x-user-id"];
+    if (orgId) proxyReq.setHeader("x-org-id", orgId);
+    if (userId) proxyReq.setHeader("x-user-id", userId);
+  },
+  onError(err, req, res) {
+    console.error("Proxy error:", err?.message);
+    if (!res.headersSent) {
+      res.status(502).json({ error: "Bad gateway" });
+    }
+  },
+};
 
-app.use(
-  "/n8n",
-  createProxyMiddleware({
-    target: N8N_BASE_URL,
-    changeOrigin: true,
-    xfwd: true,
-    // /n8n/... -> /... côté n8n
-    pathRewrite: { "^/n8n": "/" },
-    // si le target est en https avec un cert valide, pas besoin de secure:false
-    // secure: true (par défaut)
-    proxyTimeout: 30_000,
-    timeout: 30_000,
-    onProxyReq(proxyReq, req) {
-      // propage les headers multi-tenant si présents
-      const orgId = req.headers["x-org-id"];
-      const userId = req.headers["x-user-id"];
-      if (orgId) proxyReq.setHeader("x-org-id", orgId);
-      if (userId) proxyReq.setHeader("x-user-id", userId);
-    },
-  })
-);
+// ---- n8n: Cloud today, Self-host tomorrow
+const N8N_BASE_URL = process.env.N8N_BASE_URL || "";      // Cloud today OR http://n8n:5678 tomorrow
+const N8N_PREFIX   = process.env.N8N_PREFIX || "";         // "" for Cloud today, "/n8n" for self-host UI under a prefix
 
-// ---- (Optionnel) Proxy /api vers n8n si tu appelles ses endpoints REST
-app.use(
-  "/api",
-  createProxyMiddleware({
+// REST API passthrough for the frontend
+// Example: frontend -> https://api.upvizio.com/rest/health  -> proxies to  N8N_BASE_URL/rest/health
+if (N8N_BASE_URL) {
+  app.use("/rest", createProxyMiddleware({ target: N8N_BASE_URL, ...commonProxyOpts }));
+
+  // Webhooks (prod & test)
+  app.use(["/webhook", "/webhook/"], createProxyMiddleware({
     target: N8N_BASE_URL,
-    changeOrigin: true,
-    xfwd: true,
-    proxyTimeout: 30_000,
-    timeout: 30_000,
-  })
-);
+    ...commonProxyOpts,
+    pathRewrite: (path) => path.replace(/^\/webhook/, "/webhook"),
+  }));
+  app.use(["/webhook-test", "/webhook-test/"], createProxyMiddleware({
+    target: N8N_BASE_URL,
+    ...commonProxyOpts,
+    pathRewrite: (path) => path.replace(/^\/webhook-test/, "/webhook-test"),
+  }));
+
+  // UI behavior:
+  if (N8N_PREFIX) {
+    // Self-host mode: serve n8n UI under /n8n (or any prefix you set)
+    app.use(
+      N8N_PREFIX,
+      createProxyMiddleware({
+        target: N8N_BASE_URL,
+        ...commonProxyOpts,
+        // /n8n/... -> /... on n8n
+        pathRewrite: (path) => path.replace(new RegExp(`^${N8N_PREFIX}`), "") || "/",
+      })
+    );
+  } else {
+    // Cloud mode: redirect /n8n/* to the Cloud UI (no UI proxying)
+    app.get("/n8n/*", (_req, res) => res.redirect(302, `${N8N_BASE_URL}/`));
+  }
+}
+
+// (Optional) future services go here, e.g. /bazero -> Baserow self-host (not needed for Baserow Cloud)
+
+// ---- 404
+app.use((_req, res) => res.status(404).json({ error: "Not found" }));
 
 app.listen(PORT, () => {
   console.log(`Proxy running on :${PORT}`);
