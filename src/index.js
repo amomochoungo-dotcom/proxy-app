@@ -13,9 +13,31 @@ app.use(helmet());
 app.use(morgan("tiny"));
 app.set("trust proxy", true);
 
-// ---------- CORS (depuis ton frontend)
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "*";
-app.use(cors({ origin: FRONTEND_ORIGIN, credentials: true }));
+// ---------- CORS (depuis ton frontend) — autorise plusieurs origines et renvoie l'origine exacte
+const ORIGINS =
+  (process.env.FRONTEND_ORIGIN || "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
+
+// Important pour les caches/intermédiaires quand l'origine varie
+app.use((req, res, next) => { res.header("Vary", "Origin"); next(); });
+
+app.use(cors({
+  origin: (origin, cb) => {
+    // Requêtes sans header Origin (ex: cURL, même origine) → OK
+    if (!origin) return cb(null, true);
+    // Pas de liste configurée → autorise (fallback dev)
+    if (ORIGINS.length === 0) return cb(null, true);
+    // Autorise si l'origine demandée est dans la liste
+    if (ORIGINS.includes(origin)) return cb(null, true);
+    // Sinon refuse (le navigateur bloquera la réponse)
+    return cb(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+  methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "x-org-id", "x-user-id"],
+}));
 
 // ---------- Health
 app.get("/healthz", (_req, res) => res.send("ok"));
