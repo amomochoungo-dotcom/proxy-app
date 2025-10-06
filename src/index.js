@@ -36,7 +36,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "x-org-id", "x-user-id"],
+  allowedHeaders: ["Content-Type", "x-org-id", "x-user-id","x-api-key"],
 }));
 
 // ---------- Health
@@ -64,8 +64,10 @@ const commonProxyOpts = {
     // propage les headers multi-tenant si présents + petit log
     const orgId = req.headers["x-org-id"];
     const userId = req.headers["x-user-id"];
+    const apiKey = req.headers["x-api-key"];
     if (orgId) proxyReq.setHeader("x-org-id", orgId);
     if (userId) proxyReq.setHeader("x-user-id", userId);
+     if (apiKey) proxyReq.setHeader("x-api-key", apiKey); 
     console.log("[n8n proxy] →", req.method, req.originalUrl);
   },
   onError(err, _req, res) {
