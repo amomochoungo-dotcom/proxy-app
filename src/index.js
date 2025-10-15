@@ -87,6 +87,36 @@ if (N8N_BASE_URL) {
   //   /n8n/webhook/XXX        -> N8N_BASE_URL/webhook/XXX
   //   /n8n/webhook-test/YYY   -> N8N_BASE_URL/webhook-test/YYY
   //   /n8n/ (UI)              -> N8N_BASE_URL/
+  // --- Préflight dédié aux webhooks n8n (OPTIONS) ---
+// Répond 204 + en-têtes CORS exacts, en écho de la requête
+app.options('/n8n/webhook/*', (req, res) => {
+  const origin = req.headers.origin || '';
+  const isAllowed = ORIGINS.length === 0 || ORIGINS.includes(origin);
+  if (isAllowed && origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  // Écho des headers demandés par le navigateur (le plus robuste)
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    req.headers['access-control-request-headers'] || 'content-type, x-org-id, x-api-key'
+  );
+  res.status(204).end();
+});
+
+// --- En-têtes CORS aussi sur le POST réel vers /n8n/webhook/* ---
+app.use('/n8n/webhook', (req, res, next) => {
+  const origin = req.headers.origin || '';
+  const isAllowed = ORIGINS.length === 0 || ORIGINS.includes(origin);
+  if (isAllowed && origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+  next();
+});
   app.use(
     "/n8n",
     createProxyMiddleware({
